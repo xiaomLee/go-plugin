@@ -3,7 +3,7 @@ module github.com/xiaomLee/go-plugin/registry
 go 1.13
 
 replace (
-	github.com/coreos/bbolt => go.etcd.io/bbolt v1.3.5
+	github.com/coreos/bbolt@latest => go.etcd.io/bbolt v1.3.5
 	google.golang.org/grpc => google.golang.org/grpc v1.26.0
 )
 
