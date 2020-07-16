@@ -1,17 +1,17 @@
-package lb_1
+package lb
 
 import (
-	"github.com/fagongzi/gateway/pkg/pb/metapb"
-	"github.com/valyala/fasthttp"
+	"strconv"
 )
 
 // WeightRobin weight robin loadBalance impl
 type WeightRobin struct {
-	opts map[uint64]*weightRobin
+	opts map[string]*weightRobin
 }
 
 // weightRobin used to save the weight info of server
 type weightRobin struct {
+	node *Node
 	effectiveWeight int64
 	currentWeight   int64
 }
@@ -19,25 +19,31 @@ type weightRobin struct {
 // NewWeightRobin create a WeightRobin
 func NewWeightRobin() LoadBalance {
 	return &WeightRobin{
-		opts: make(map[uint64]*weightRobin, 1024),
+		opts: make(map[string]*weightRobin, 1024),
 	}
 }
 
 // Select select a server from servers using WeightRobin
-func (w *WeightRobin) Select(req *fasthttp.RequestCtx, servers []metapb.Server) (best uint64) {
+func (w *WeightRobin) Select(servers []*Node, opts ...string) *Node {
 	var total int64
 	l := len(servers)
 	if 0 >= l {
-		return 0
+		return nil
 	}
 
+	best := ""
 	for i := l - 1; i >= 0; i-- {
 		svr := servers[i]
+		weight, err := strconv.ParseInt(svr.Metadata["weight"], 10, 64)
+		if err != nil {
+			return nil
+		}
+		id := svr.Id
 
-		id := svr.ID
 		if _, ok := w.opts[id]; !ok {
 			w.opts[id] = &weightRobin{
-				effectiveWeight: svr.Weight,
+				node: svr,
+				effectiveWeight: weight,
 			}
 		}
 
@@ -45,20 +51,20 @@ func (w *WeightRobin) Select(req *fasthttp.RequestCtx, servers []metapb.Server) 
 		wt.currentWeight += wt.effectiveWeight
 		total += wt.effectiveWeight
 
-		if wt.effectiveWeight < svr.Weight {
+		if wt.effectiveWeight < weight {
 			wt.effectiveWeight++
 		}
 
-		if best == 0 || w.opts[uint64(best)] == nil || wt.currentWeight > w.opts[best].currentWeight {
+		if best == "" || w.opts[best] == nil || wt.currentWeight > w.opts[best].currentWeight {
 			best = id
 		}
 	}
 
-	if best == 0 {
-		return 0
+	if best == "" {
+		return nil
 	}
 
 	w.opts[best].currentWeight -= total
 
-	return best
+	return w.opts[best].node
 }

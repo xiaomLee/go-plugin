@@ -1,10 +1,7 @@
-package lb_1
+package lb
 
 import (
 	"sync/atomic"
-
-	"github.com/fagongzi/gateway/pkg/pb/metapb"
-	"github.com/valyala/fasthttp"
 )
 
 // RoundRobin round robin loadBalance impl
@@ -23,13 +20,13 @@ func NewRoundRobin() LoadBalance {
 }
 
 // Select select a server from servers using RoundRobin
-func (rr RoundRobin) Select(req *fasthttp.RequestCtx, servers []metapb.Server) uint64 {
+func (rr RoundRobin) Select(servers []*Node, opts ...string) *Node {
 	l := uint64(len(servers))
 
 	if 0 >= l {
-		return 0
+		return nil
 	}
 
 	target := servers[int(atomic.AddUint64(rr.ops, 1)%l)]
-	return target.ID
+	return target
 }
