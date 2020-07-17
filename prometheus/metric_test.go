@@ -146,6 +146,6 @@ func TestNewMetricsHub(t *testing.T) {
 	// start push
 	h.StartMetricsPush(Address("http://124.71.103.18:9091"), Job("test-job-newtHub"))
 
-	time.Sleep(2*time.Minute)
+	time.Sleep(20*time.Minute)
 
 }

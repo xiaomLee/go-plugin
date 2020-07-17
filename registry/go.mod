@@ -3,12 +3,12 @@ module github.com/xiaomLee/go-plugin/registry
 go 1.13
 
 replace (
-	github.com/coreos/bbolt@latest => go.etcd.io/bbolt v1.3.5
-	google.golang.org/grpc => google.golang.org/grpc v1.26.0
+	github.com/coreos/bbolt v1.3.5 => go.etcd.io/bbolt v1.3.5
+	google.golang.org/grpc v1.30.0 => google.golang.org/grpc v1.26.0
 )
 
 require (
-	github.com/coreos/bbolt v0.0.0-00010101000000-000000000000 // indirect
+	github.com/coreos/bbolt v1.3.5 // indirect
 	github.com/coreos/etcd v3.3.22+incompatible
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf // indirect
@@ -33,6 +33,5 @@ require (
 	go.uber.org/zap v1.15.0 // indirect
 	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e // indirect
 	google.golang.org/genproto v0.0.0-20200715011427-11fb19a81f2c // indirect
-	google.golang.org/grpc/examples v0.0.0-20200716061055-dd8658f92101 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
 )
