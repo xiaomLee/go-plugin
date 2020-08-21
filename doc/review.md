@@ -8,13 +8,13 @@
 
    编译期间的切片是 Slice 类型的，但是在运行时切片由如下的 SliceHeader 结构体表示，一个三元组结构。
    其中 Data 字段是指向数组的指针，Len 表示当前切片的长度，而 Cap 表示当前切片的容量，也就是 Data 数组的大小。
-```
-type SliceHeader struct {
-	Data uintptr
-	Len  int
-	Cap  int
-}
-```
+    ```
+    type SliceHeader struct {
+        Data uintptr
+        Len  int
+        Cap  int
+    }
+    ```
    Data 作为一个指针指向的数组是一片连续的内存空间，这片内存空间可以用于存储切片中保存的全部元素，
    数组中的元素只是逻辑上的概念，底层存储其实都是连续的，所以我们可以将切片理解成一片连续的内存空间加上长度与容量的标识。
    ![slice内存结构](./images/slice-1.jpg)
@@ -30,39 +30,39 @@ type SliceHeader struct {
 
    当我们使用 copy(a, b) 的形式对切片进行拷贝时，编译期间的 cmd/compile/internal/gc.copyany 函数也会分两种情况进行处理，
    如果当前 copy 不是在运行时调用的，copy(a, b) 会被直接转换成下面的代码：
-```
-n := len(a)
-if n > len(b) {
-    n = len(b)
-}
-if a.ptr != b.ptr {
-    memmove(a.ptr, b.ptr, n*sizeof(elem(a))) 
-}
-```
+    ```
+    n := len(a)
+    if n > len(b) {
+        n = len(b)
+    }
+    if a.ptr != b.ptr {
+        memmove(a.ptr, b.ptr, n*sizeof(elem(a))) 
+    }
+    ```
    其中 memmove 会负责对内存进行拷贝，在其他情况下，编译器会使用 runtime.slicecopy 函数替换运行期间调用的 copy，例如：go copy(a, b)：
-```
-func slicecopy(to, fm slice, width uintptr) int {
-	if fm.len == 0 || to.len == 0 {
-		return 0
-	}
-	n := fm.len
-	if to.len < n {
-		n = to.len
-	}
-	if width == 0 {
-		return n
-	}
-	...
-
-	size := uintptr(n) * width
-	if size == 1 {
-		*(*byte)(to.array) = *(*byte)(fm.array)
-	} else {
-		memmove(to.array, fm.array, size)
-	}
-	return n
-}
-```
+    ```
+    func slicecopy(to, fm slice, width uintptr) int {
+        if fm.len == 0 || to.len == 0 {
+            return 0
+        }
+        n := fm.len
+        if to.len < n {
+            n = to.len
+        }
+        if width == 0 {
+            return n
+        }
+        ...
+    
+        size := uintptr(n) * width
+        if size == 1 {
+            *(*byte)(to.array) = *(*byte)(fm.array)
+        } else {
+            memmove(to.array, fm.array, size)
+        }
+        return n
+    }
+    ```
    上述函数的实现非常直接，两种不同的拷贝方式一般都会通过 memmove 将整块内存中的内容拷贝到目标的内存区域中.
    ![slice-copy](./images/slice-2.jpg)
    相比于依次对元素进行拷贝，这种方式能够提供更好的性能，但是需要注意的是，哪怕使用 memmove 对内存成块进行拷贝，
@@ -79,16 +79,17 @@ func slicecopy(to, fm slice, width uintptr) int {
 ##### map
 
 1. 哈希表原理
-   对key进行哈希，得到一个地址，直接在该地址存放value。
+
+   对key进行哈希，得到一个值，以该值为索引，在连续的内存区域内寻址存放value（一般以数组作为底层存储结构）。
    实现哈希表的关键点在于如何选择哈希函数，哈希函数的选择在很大程度上能够决定哈希表的读写性能。
    
    冲突解决：
    ```
    开放寻址法
-   开放寻址法2是一种在哈希表中解决哈希碰撞的方法，这种方法的核心思想是对数组中的元素依次探测和比较以判断目标键值对是否存在于哈希表中，
+   开放寻址法是一种在哈希表中解决哈希碰撞的方法，这种方法的核心思想是对数组中的元素依次探测和比较以判断目标键值对是否存在于哈希表中，
    如果我们使用开放寻址法来实现哈希表，那么在支撑哈希表的数据结构就是数组，不
    过因为数组的长度有限，存储 (author, draven) 这个键值对时会从如下哈希位置开始往下遍历，
-   当我们向当前哈希表写入新的数据时发生了冲突，就会将键值对写入到下一个不为空的位置
+   当我们向当前哈希表写入新的数据时发生了冲突，就会将键值对写入到下一个不为空的位置。
    ```
    
    ```
@@ -99,9 +100,9 @@ func slicecopy(to, fm slice, width uintptr) int {
    实现拉链法一般会使用数组加上链表，不过有一些语言会在拉链法的哈希中引入红黑树以优化性能，
    拉链法会使用链表数组作为哈希底层的数据结构，我们可以将它看成一个可以扩展的『二维数组』
    
-   当我们需要将一个键值对 (Key6, Value6) 写入哈希表时，键值对中的键 Key6 都会先经过一个哈希函数，哈希函数返回的哈希会帮助我们选择一个桶，
+   当我们需要将一个键值对 (Key, Value) 写入哈希表时，键值对中的键 Key 都会先经过一个哈希函数，哈希函数返回的哈希会帮助我们选择一个桶，
    和开放地址法一样，选择桶的方式就是直接对哈希返回的结果取模，
-   选择了 2 号桶之后就可以遍历当前桶中的链表了，在遍历链表的过程中会遇到以下两种情况：
+   选择了桶之后就可以遍历当前桶中的链表了，在遍历链表的过程中会遇到以下两种情况：
    
    找到键相同的键值对 —— 更新键对应的值；
    没有找到键相同的键值对 —— 在链表的末尾追加新键值对
@@ -154,7 +155,7 @@ func slicecopy(to, fm slice, width uintptr) int {
    ![map内存结构](./images/map-1.jpg)
    
 3. 读写操作
-
+    
 
 4. 扩容
 
