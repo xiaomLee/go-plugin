@@ -429,6 +429,11 @@ type schedt struct {
 ### 项目经验
 
 #### 通用网关项目
+   api网关，负责公司的服务路由、登录鉴权、请求转发等需求。
+   
+   服务端，处理接受外部请求。集群模式，可水平扩展。
+   
+   配置管理端，配合平台管理服务元信息、服务api、负载均衡器、限流熔断的配置。
 
 ##### 微服务框架
     
@@ -457,7 +462,7 @@ type schedt struct {
 
 
 ##### 服务注册、发现
-    借鉴go-micro自己实现，支持etcd/consul后端存储可选
+    借鉴go-micro.register自己实现，支持etcd/consul后端存储可选
     service启动的时候进行注册，关闭时deregister，10秒expire，2/3*expireTime秒主动同步心跳
     http网关启动时拉取并更新保存一份本地缓存，watch监听配置变更
     可配合nginx使用，详情参考nginx-upstream配置
@@ -483,9 +488,79 @@ type schedt struct {
    [参考](https://www.infoq.cn/article/Qg2tX8fyw5Vt-f3HH673)
 
 ##### 负载均衡
+   可结合服务发现使用，动态负载均衡。
+   
+   - 随机
+     
+   - 轮训
+   
+   - 带权重轮训
+     ```
+        var total int64
+     	l := len(servers)
+     	if 0 >= l {
+     		return nil
+     	}
+     
+     	best := ""
+     	for i := l - 1; i >= 0; i-- {
+     		svr := servers[i]
+     		weight, err := strconv.ParseInt(svr.Metadata["weight"], 10, 64)
+     		if err != nil {
+     			return nil
+     		}
+     		id := svr.Id
+     
+     		if _, ok := w.opts[id]; !ok {
+     			w.opts[id] = &weightRobin{
+     				node: svr,
+     				effectiveWeight: weight,
+     			}
+     		}
+     
+     		wt := w.opts[id]
+     		wt.currentWeight += wt.effectiveWeight
+     		total += wt.effectiveWeight
+     
+     		if wt.effectiveWeight < weight {
+     			wt.effectiveWeight++
+     		}
+     
+     		if best == "" || w.opts[best] == nil || wt.currentWeight > w.opts[best].currentWeight {
+     			best = id
+     		}
+     	}
+     
+     	if best == "" {
+     		return nil
+     	}
+     
+     	w.opts[best].currentWeight -= total
+     ```
+   
+   - hash 可指定hash字符串 $http_refer $client_ip $uri $uid $phone $email 
+       
+   
 ##### 服务降级
+   hystrix-go实现的熔断器
+   
+   其他熔断器实现：
+   
+
 ##### 服务监控
+   使用prometheus实现，各api请求信息统计、延时统计、错误统计、错误msg分类。
+   业务服务也可主动上报自身的业务监控指标。
+   
+   使用promPushGateway的方式进行上报，各服务只需往pushgateway推送指标即可，promServer从pushgateway采集信息，减少业务入侵与网络隔离。
+   
+   监控平台使用granfa
+   
+   优化方向，使用metric包装监控信息接口，解耦prometheus的具体实现，比如可使用xxx实现
+   
+
 ##### 链路追踪
+   通过Opentracing包实现，后端存储使用jaeger
+
 
 #### 消息网关
 ##### 长连接
@@ -495,9 +570,56 @@ type schedt struct {
 ##### 模块解耦
 
 #### 交易所
+
+   初期业务模型：市场报价制，价格不受自身平台用户的交易所影响。用户下价格委托单，价格达成机成交。
+   
+   初期项目架构：bitcoin-kline(采集外部市场价)、trans-server(用户交易api)
+   
+   项目核心组件：全局用户信息列表，[ncpu]*reqworker, 根据uid取模处理对应用户请求。
+   缺点：存在全局锁、热点数据、导致worker工作不均匀、并发性能低，有状态的内存计算型服务，中心化，无法水平扩展。
+   
+   
+   改进：
+   ```
+   方案1
+   用户unit存储在worker里面，每个worker串行处理用户请求。
+   增加集群模式，水平扩展。
+   在trans-service之前，加一层proxy，根据uid做hash，保证同一个uid只可能路由到下游某一台服务器，类似hash分片的概念。
+   
+   难点&缺点：集群可用性，某一台机器故障后，会导致需要全部机器reload，uid重新分片
+   
+   方案2
+   鉴于业务特点，用户成交不影响价格，所以用户之间是可并行的，单用户设计账户操作，不可并行。
+   trans-server拆分成两个服务，一个调度服务，一个api-server服务。
+   调度服务服务根据uid进行计算任务的分发，每个uid对应一个分布式锁。
+   api-server计算处理单用户的数据，
+   
+   难点&缺点：调度服务需单节点，中心化。
+   
+   ```
+   
+   
+   后期业务变更：需引入市场撮合机制，原先业务模型基本被推翻，引入别的分支，扩展原有架构。
+   
+   
 ##### 应用特性
+
+   撮合机制，需存在两个匹配队列，买方队列、卖方队列。
+   
+   数据库撮合：数据落地到数据库，每次撮合从数据库取出队列进行匹配。
+   内存撮合：数据存于内存，记录日志，同时落地到数据库；撮合时从内存进行匹配。
+   
+   内存模型效率高，对数据库性能要求低。都存在单点串行问题，由撮合模式决定，同时只能有一个报价在进行撮合。
+   
+    
 ##### 业内常用解决方案
+
+   采用内存撮合模型，同时通过分布式部署保证单点的高可用
+
 ##### 有状态分布式应用
+   zk raft poixs
+
+
 ##### raft协议具体实现
 
 
