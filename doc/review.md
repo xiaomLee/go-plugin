@@ -418,6 +418,7 @@ type schedt struct {
 
 #### linux
 ##### 服务器各项性能指标
+##### 排查问题流程
 ##### 常用命令
 
 #### docker
