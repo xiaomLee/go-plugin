@@ -201,9 +201,146 @@
    ![进程-线程-协程](./images/schd-1.jpg)  
 
 2. Go调度模型
+   
+   G — 表示 Goroutine，它是一个待执行的任务。它在运行时调度器中的地位与线程在操作系统中差不多，但是它占用了更小的内存空间，也降低了上下文切换的开销。
+   
+   M — 表示操作系统的线程，它由操作系统的调度器调度和管理；
+   
+   P — 表示处理器，它可以被看做运行在线程上的本地调度器；
+   ![M-P-G](./images/schd-2.jpg)
+   
 
 3. 数据结构
+    
+   G
+   Goroutine 在 Go 语言运行时使用私有结构体 runtime.g 表示。这个私有结构体非常复杂，总共包含 40 多个用于表示各种状态的成员变量，
+   我们在这里也不会介绍全部字段，而是会挑选其中的一部分进行介绍
+   ```
+   type g struct {
+   	    stack       stack   // 描述了当前 Goroutine 的栈内存范围 [stack.lo, stack.hi)
+   	    stackguard0 uintptr // 用于调度器抢占式调度
+        preempt       bool // 抢占信号
+    	preemptStop   bool // 抢占时将状态修改成 `_Gpreempted`
+    	preemptShrink bool // 在同步安全点收缩栈
+   
+        _panic       *_panic // 最内侧的 panic 结构体
+   	    _defer       *_defer // 最内侧的延迟函数结构体
+   
+        m              *m   // 当前 Goroutine 占用的线程，可能为空
+        sched          gobuf    // 存储 Goroutine 的调度相关的数据
+        atomicstatus   uint32   // Goroutine 的状态
+        goid           int64    // Goroutine 的 ID，该字段对开发者不可见，Go 团队认为引入 ID 会让部分 Goroutine 变得更特殊，从而限制语言的并发能力
+   }
+   
+   type gobuf struct {
+        sp   uintptr    // 栈指针（Stack Pointer）
+        pc   uintptr    // 程序计数器（Program Counter）
+        g    guintptr   // 持有 runtime.gobuf 的 Goroutine
+        ret  sys.Uintreg    // 系统调用的返回值
+        ...
+   }
+   ```
+   gobuf的内容会在调度器保存或者恢复上下文的时候用到，其中的栈指针和程序计数器会用来存储或者恢复寄存器中的值，改变程序即将执行的代码。
+   结构体 runtime.g 的 atomicstatus 字段就存储了当前 Goroutine 的状态。除了几个已经不被使用的以及与 GC 相关的状态之外，Goroutine 可能处于以下 9 个状态
+   ```
+      _Gidle	刚刚被分配并且还没有被初始化
+      _Grunnable	没有执行代码，没有栈的所有权，存储在运行队列中
+      _Grunning	可以执行代码，拥有栈的所有权，被赋予了内核线程 M 和处理器 P
+      _Gsyscall	正在执行系统调用，拥有栈的所有权，没有执行用户代码，被赋予了内核线程 M 但是不在运行队列上
+      _Gwaiting	由于运行时而被阻塞，没有执行用户代码并且不在运行队列上，但是可能存在于 Channel 的等待队列上
+      _Gdead	没有被使用，没有执行代码，可能有分配的栈
+      _Gcopystack	栈正在被拷贝，没有执行代码，不在运行队列上
+      _Gpreempted	由于抢占而被阻塞，没有执行用户代码并且不在运行队列上，等待唤醒
+      _Gscan	GC 正在扫描栈空间，没有执行代码，可以与其他状态同时存在
+   ```
+   
+   
+   M
+   
+   Go 语言并发模型中的 M 是操作系统线程。调度器最多可以创建 10000 个线程，但是其中大多数的线程都不会执行用户代码（可能陷入系统调用），
+   最多只会有 GOMAXPROCS 个活跃线程能够正常运行。
+   
+   在默认情况下，运行时会将 GOMAXPROCS 设置成当前机器的核数，我们也可以使用 runtime.GOMAXPROCS 来改变程序中最大的线程数。
+   操作系统线程在 Go 语言中会使用私有结构体 runtime.m 来表示，这个结构体中也包含了几十个私有的字段，我们依然对其进行了删减，先来了解几个与 Goroutine 直接相关的字段：
+   ```
+    type m struct {
+        // 其中 g0 是持有调度栈的 Goroutine，curg 是在当前线程上运行的用户 Goroutine，这也是操作系统线程唯一关心的两个 Goroutine
+    	g0   *g 
+    	curg *g
+    	
+        p             puintptr
+        nextp         puintptr
+        oldp          puintptr
+    }
+   ```
 
+    g0 是一个运行时中比较特殊的 Goroutine，它会深度参与运行时的调度过程，包括 Goroutine 的创建、大内存分配和 CGO 函数的执行。在后面的小节中，
+    我们会经常看到 g0 的身影。runtime.m 结构体中还存在着三个处理器字段，它们分别表示正在运行代码的处理器 p、暂存的处理器 nextp 和执行系统调用之前的使用线程的处理器 oldp
+  
+   P
+   
+   调度器中的处理器 P 是线程和 Goroutine 的中间层，它能提供线程需要的上下文环境，也会负责调度线程上的等待队列，通过处理器 P 的调度，每一个内核线程都能够执行多个 Goroutine，它能在 Goroutine 进行一些 I/O 操作时及时切换，提高线程的利用率。
+   
+   因为调度器在启动时就会创建 GOMAXPROCS 个处理器，所以 Go 语言程序的处理器数量一定会等于 GOMAXPROCS，这些处理器会绑定到不同的内核线程上并利用线程的计算资源运行 Goroutine。
+   
+   runtime.p 是处理器的运行时表示，作为调度器的内部实现，它包含的字段也非常多，其中包括与性能追踪、垃圾回收和计时器相关的字段，这些字段也非常重要，但是在这里就不一一展示了，我们主要关注处理器中的线程和运行队列：
+   
+   ```
+   type p struct {
+   	m           muintptr
+   
+   	runqhead uint32
+   	runqtail uint32
+   	runq     [256]guintptr
+   	runnext guintptr
+   	...
+
+    状态	描述
+    _Pidle	处理器没有运行用户代码或者调度器，被空闲队列或者改变其状态的结构持有，运行队列为空
+    _Prunning	被线程 M 持有，并且正在执行用户代码或者调度器
+    _Psyscall	没有执行用户代码，当前线程陷入系统调用
+    _Pgcstop	被线程 M 持有，当前处理器由于垃圾回收被停止
+    _Pdead	当前处理器已经不被使用
+   }
+   ```
+
+   调度器sched
+   
+   调度器，所有 goroutine 被调度的核心，存放了调度器持有的全局资源，访问这些资源需要持有锁：
+   管理了能够将 G 和 M 进行绑定的 M 队列
+   管理了空闲的 P 链表（队列）
+   管理了 G 的全局队列
+   管理了可被复用的 G 的全局缓存
+   管理了 defer 池
+```
+type schedt struct {
+	lock mutex
+
+	pidle      puintptr	// 空闲 p 链表
+	npidle     uint32	// 空闲 p 数量
+	nmspinning uint32	// 自旋状态的 M 的数量
+	runq       gQueue	// 全局 runnable G 队列
+	runqsize   int32
+	gFree struct {		// 有效 dead G 的全局缓存.
+		lock    mutex
+		stack   gList	// 包含栈的 Gs
+		noStack gList	// 没有栈的 Gs
+		n       int32
+	}
+	sudoglock  mutex	// sudog 结构的集中缓存
+	sudogcache *sudog
+	deferlock  mutex	// 不同大小的有效的 defer 结构的池
+	deferpool  [5]*_defer
+	
+	...
+}
+```
+   
+   
+   MPG容器结构
+   ![mpg容器结构](./images/m-p-g容器结构.jpg)
+   
+   
 4. 调度器启动
 
 5. 协程创建与调度
@@ -213,6 +350,30 @@
 
 
 #### 系统监控 sysmon
+
+1. 设计原理&启动
+    
+   Go 语言的系统监控起到了很重要的作用，它在内部启动了一个不会中止的循环，在循环的内部会轮询网络、抢占长期运行或者处于系统调用的 Goroutine 以及触发垃圾回收，
+   通过这些行为，它能够让系统的运行状态变得更健康。
+   ![go-monitor](./images/sysmon-1.jpg)
+
+2. 循环监控
+
+   检查死锁
+   
+   
+   运行计时器
+   
+   运行网络轮训器 netpoll
+   
+   抢占处理器
+   
+   垃圾回收
+   
+3. 小结
+    
+   运行时通过系统监控来触发线程的抢占、网络的轮询和垃圾回收，保证 Go 语言运行时的可用性。
+   系统监控能够很好地解决尾延迟的问题，减少调度器调度 Goroutine 的饥饿问题并保证计时器在尽可能准确的时间触发。
 
 #### 内存模型
 
@@ -234,6 +395,8 @@
 ##### rabbitMq
 ##### kafka
 
+#### nginx
+
 #### 分布式
 ##### etcd
 ##### consul
@@ -241,6 +404,15 @@
 ##### zk
 
 
+### 计算机基础
+
+#### tcp三次握手 四次挥手
+
+#### http/https tls协议
+
+#### http2
+
+#### grpc probuf
 
 ### 开发运维
 
@@ -256,10 +428,59 @@
 ### 项目经验
 
 #### 通用网关项目
+
 ##### 微服务框架
+    
+- Go Micro
+    ```
+    服务发现 - 应用程序自动注册到服务发现系统。
+    负载平衡 - 客户端负载平衡，用于平衡服务实例之间的请求。
+    同步通信 - 提供请求 / 响应传输层。
+    异步通信 - 内置发布 / 订阅功能。
+    消息编码 - 基于消息的内容类型头的编码 / 解码。
+    RPC 客户机 / 服务器包 - 利用上述功能并公开接口来构建微服务
+    ```
+
+- Go Kit
+  ```
+  认证 - Basic 认证和 JWT 认证
+  传输 - HTTP、Nats、gRPC 等等。
+  日志记录 - 用于结构化服务日志记录的通用接口。
+  指标 - CloudWatch、Statsd、Graphite 等。
+  追踪 - Zipkin 和 Opentracing。
+  服务发现 - Consul、Etcd、Eureka 等等。
+  断路器 - Hystrix 的 Go 实现。
+  ```
+    
 ##### grpc
+
+
 ##### 服务注册、发现
+    借鉴go-micro自己实现，支持etcd/consul后端存储可选
+    service启动的时候进行注册，关闭时deregister，10秒expire，2/3*expireTime秒主动同步心跳
+    http网关启动时拉取并更新保存一份本地缓存，watch监听配置变更
+    可配合nginx使用，详情参考nginx-upstream配置
+
 ##### 服务限流
+    支持不同级别的限流，默认限流策略：gatewayLimit --> ipLimit --> serviceLimit --> apiLimit --> api级别的其他自定义限流器
+    限流算法以及实现：
+        redis+lua实现的分布式限流器，采用令牌通算法实现
+        
+    扩展：
+        漏桶算法
+        将每个请求视作"水滴"放入"漏桶"进行存储；
+        “漏桶"以固定速率向外"漏"出请求来执行如果"漏桶"空了则停止"漏水”；
+        如果"漏桶"满了则多余的"水滴"会被直接丢弃。
+        漏桶算法多使用队列实现，服务的请求会存到队列中，服务的提供方则按照固定的速率从队列中取出请求并执行，过多的请求则放在队列中排队或直接拒绝。
+        漏桶算法的缺陷也很明显，当短时间内有大量的突发请求时，即便此时服务器没有任何负载，每个请求也都得在队列中等待一段时间才能被响应。
+        
+        令牌桶算法
+        令牌以固定速率生成；
+        生成的令牌放入令牌桶中存放，如果令牌桶满了则多余的令牌会直接丢弃，当请求到达时，会尝试从令牌桶中取令牌，取到了令牌的请求可以执行；
+        如果桶空了，那么尝试取令牌的请求会被直接丢弃。
+        令牌桶算法既能够将所有的请求平均分布到时间区间内，又能接受服务器能够承受范围内的突发请求，因此是目前使用较为广泛的一种限流算法。
+   [参考](https://www.infoq.cn/article/Qg2tX8fyw5Vt-f3HH673)
+
 ##### 负载均衡
 ##### 服务降级
 ##### 服务监控
