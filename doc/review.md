@@ -377,6 +377,56 @@ type schedt struct {
 
 #### 内存模型
 
+   主要结构
+   Go 的内存分配器主要包含以下几个核心组件：
+   
+   heapArena: 保留整个虚拟地址空间，对应与操作系统上的实际物理内存
+   
+   mheap：分配的堆，在页大小为 8KB 的粒度上进行管理
+   
+   mspan：是 mheap 上管理的一连串的页
+   
+   mcentral：收集了给定大小等级的所有 span
+   
+   mcache：为 per-P 的缓存
+   ![go内存布局](./images/mollc-1.jpg)
+   
+   ```
+   // 说明
+   heapArena堆区管理结构体
+   mheap是最终管理内存分配落地的结构体，通过allspans []*mspan管理所有的mspan，每个mspan有一个uint8类型的字段spanclass标记大小等级与noscan，末位用于标记是否指针。
+   内存管理中唯一的全局结构，维护全局的中心缓存列表 central，另一个是管理堆区内存区域arenas。
+
+   所有mspan的分配最终落地到mheap.alloc方法，该方法会返回一个新的*mspan指针。
+   mspan有也分配器进行管理，也分配器中的mspan在向系统申请内存时会新增sysAlloc
+   
+   runtime.mheap.sysAlloc 方法在最后会初始化一个新的 runtime.heapArena 结构体来管理刚刚申请的内存空间，该结构体会被加入页堆的二维矩阵中。
+   
+   
+   mcentral特定大小等级的中心分配器，共有67*2个，在mheap中以central字段进行维护
+    central       [numSpanClasses]struct {
+    		mcentral mcentral
+    		pad      [cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize]byte
+    	}
+    
+   mcache通过alloc数组维护线程所需的内存分配，[numSpanClasses]*mspan 共 67*2=134个
+   
+   mcache特定大小的内存不足时向，通过加锁获取指定spanclass类型的mcentral对象，通过mcentral对象获取mspan, 并替换当前mspan, 替换前提：当前mspan无空闲内存，且新mspan有空闲内存。
+   
+   ```
+   
+   [结构体参考](https://changkun.de/golang/zh-cn/part2runtime/ch07alloc/basic/#heading)
+   
+   微对象 (0, 16B) — 先使用微型分配器，再依次尝试线程缓存、中心缓存和堆分配内存；
+   
+   小对象 [16B, 32KB] — 依次尝试使用线程缓存、中心缓存和堆分配内存；
+   
+   大对象 (32KB, +∞) — 直接在堆上分配内存；
+   
+
+
+[参考](https://draveness.me/golang/docs/part3-runtime/ch07-memory/golang-memory-allocator/)
+
 #### 垃圾回收机制
 
 ### 延伸阅读
