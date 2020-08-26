@@ -1325,7 +1325,7 @@ https://juejin.im/post/6844903667569541133
 ##### 服务降级
    hystrix-go实现的熔断器
    
-   其他熔断器实现：
+   其他熔断器实现：gobreaker 
    
 
 ##### 服务监控
@@ -1341,6 +1341,8 @@ https://juejin.im/post/6844903667569541133
 
 ##### 链路追踪
    通过Opentracing包实现，后端存储使用jaeger
+   
+   其他：Twitter公司开源zipkin， Google dapper Uber的 jaeger
 
 
 #### 消息网关
