@@ -219,7 +219,138 @@
 
 ##### context
 ##### channel
+   Channel 的实现是一个典型的环形队列加上 mutex 锁的实现，一个发送方队列和一个接收方队列。
+
+1. 底层结构
+```
+// src/runtime/chan.go
+type hchan struct {
+	qcount   uint           // 队列中的所有数据数
+	dataqsiz uint           // 环形队列的大小
+	buf      unsafe.Pointer // 指向大小为 dataqsiz 的数组
+	elemsize uint16         // 元素大小
+	closed   uint32         // 是否关闭
+	elemtype *_type         // 元素类型
+	sendx    uint           // 发送索引
+	recvx    uint           // 接收索引
+	recvq    waitq          // recv 等待列表，即（ <-ch ）
+	sendq    waitq          // send 等待列表，即（ ch<- ）
+	
+    // lock protects all fields in hchan, as well as several
+    // fields in sudogs blocked on this channel.
+    //
+    // Do not change another G's status while holding this lock
+    // (in particular, do not ready a G), as this can deadlock
+    // with stack shrinking.
+    lock mutex
+}
+type waitq struct { // 等待队列 sudog 双向队列
+	first *sudog
+	last  *sudog
+}
+
+// src/runtime/runtime2.go
+// sudogs are allocated from a special pool. Use acquireSudog and
+// releaseSudog to allocate and free them.
+type sudog struct {
+	// The following fields are protected by the hchan.lock of the
+	// channel this sudog is blocking on. shrinkstack depends on
+	// this for sudogs involved in channel ops.
+
+	g *g
+
+	// isSelect indicates g is participating in a select, so
+	// g.selectDone must be CAS'd to win the wake-up race.
+	isSelect bool
+	next     *sudog
+	prev     *sudog
+	elem     unsafe.Pointer // data element (may point to stack)
+
+	// The following fields are never accessed concurrently.
+	// For channels, waitlink is only accessed by g.
+	// For semaphores, all fields (including the ones above)
+	// are only accessed when holding a semaRoot lock.
+
+	acquiretime int64
+	releasetime int64
+	ticket      uint32
+	parent      *sudog // semaRoot binary tree
+	waitlink    *sudog // g.waiting list or semaRoot
+	waittail    *sudog // semaRoot
+	c           *hchan // channel
+}
+```
+   buf是缓存数据缓冲的环形队列，recvq sendq分别表示等待的读取和发送队列，对应的有recvx sendx表示各自的索引。
+   
+   lock用来保护当前hchan的所有fields，同时在持有锁的时候禁止改变其他g的状态，特别是ready其他g，这可能导致其他g被调度，然后发生栈收缩，导致死锁。
+   ```
+   发送数据过程中， 对要发送数据的指针进行读取，将会与调度器对执行栈的伸缩发生竞争。
+   这是因为直接读取 Channel 的数据分为两个过程：1. 读取发送方的值的指针 2. 拷贝到要接收的位置。 
+   然而在 1 和 2 这两个步骤之间，发送方的执行栈可能发生收缩，进而指针失效，成为竞争的源头。
+   ```
+   
+   sudog保存着当前的g，以及要发送或者接收的数据。数据可能是指向栈空间的指针。
+   
+   makechan 实现的本质是根据需要创建的元素大小，对 mallocgc 进行封装，因此，Channel 总是在堆上进行分配，它们会被垃圾回收器进行回收， 
+   这也是为什么 Channel 不一定总是需要调用 close(ch) 进行显式地关闭。
+   
+2. 发送数据
+   如果一个 Channel 为零值（比如没有初始化），这时候的发送操作会暂止当前的Goroutine（gopark）。而 gopark会将当前的 Goroutine 休眠，从而发生死锁崩溃。
+```
+func chansend(c *hchan, ep unsafe.Pointer, block bool) bool {
+	// 当向 nil channel 发送数据时，会调用 gopark
+	// 而 gopark 会将当前的 Goroutine 休眠，从而发生死锁崩溃
+	if c == nil {
+		if !block {
+			return false
+		}
+		gopark(nil, nil, waitReasonChanSendNilChan)
+		throw("unreachable")
+	}
+
+	...
+}
+```
+
+   发送过程包含三个步骤：
+```
+1. 持有锁
+2. 入队，拷贝要发送的数据
+3. 释放锁
+
+其中第二个步骤包含三个子步骤：
+1. 找到是否有正在阻塞的接收方，是则直接发送
+2. 找到是否有空余的缓存，是则存入
+3. 阻塞直到被唤醒
+```
+
+3. 接收数据
+   接收过程与发送过程类似
+```
+1. 上锁
+2. 从缓存中出队，拷贝要接收的数据
+3. 解锁
+
+其中第二个步骤包含三个子步骤：
+1. 如果 Channel 已被关闭，且 Channel 没有数据，立刻返回
+2. 如果存在正在阻塞的发送方，说明缓存已满，从缓存队头取一个数据，再复始一个阻塞的发送方
+3. 否则，检查缓存，如果缓存中仍有数据，则从缓存中读取，读取过程会将队列中的数据拷贝一份到接收方的执行栈中
+4. 没有能接受的数据，阻塞当前的接收方 Goroutine
+```
+   无缓冲 Channel而言v <- ch happens before ch <- v了, 因为无缓冲Channel的接收方会先从发送方栈拷贝数据后，发送方才会被放回调度队列中，等待重新调度。
+
+4. channel关闭
+   当 Channel 关闭时，我们必须让所有阻塞的接收方重新被调度，让所有的发送方也重新被调度，
+   这时候 的实现先将 Goroutine 统一添加到一个列表中（需要锁），然后逐个地进行复始（不需要锁）。
+
 ##### select
+
+##### defer
+
+##### panic
+
+##### interface
+
 ##### timer
 
 #### 调度器
@@ -664,6 +795,22 @@ type schedt struct {
     
     profile的意义以及使用场景
     查询到 SQL 会执行多少时间, 并看出 CPU/Memory 使用量, 执行过程中 Systemlock, Table lock 花多少时间等等
+    
+    慢查询分析工具mysqldumpslow
+    
+    -s 表示按照何种方式排序
+        c 访问次数
+        l 锁定时间
+        r 返回记录
+        t 查询时间
+        al 平均锁定时间
+        ar 平均返回记录数
+        at  平均查询时间
+    -t 返回前面多少条数据
+    -g 后边搭配一个正则匹配模式，大小写不敏感
+    
+    mysqldumpslow -s r -t 10 /var/lib/mysql/695f5026f0f6-slow.log
+    mysqldumpslow -s t -t 10 /var/lib/mysql/695f5026f0f6-slow.log
 
 6. innodb行锁 乐观锁和悲观锁
 
@@ -814,7 +961,41 @@ type schedt struct {
    ```
    
    持久化写入和重载时，都会判断key是否过期，过期不载入。
-   
+
+4. 底层数据结构
+
+  
+5. 常见问题
+    
+    缓存穿透
+    
+        指大量用户同时访问不存在的key，导致请求直接穿透到数据库层。
+        解决方案：
+        1. 对内部的合法key实行一定的命名规范，非法key未满足正则表达式的直接返回
+        2. 结合具体场景，数据敏感度不高的业务，可只读缓存。另一个线程负责将数据库中的数据更新到缓存
+        3. 将数据库查询回来的值，不管是否查到，都写入缓存。
+        
+    热点数据
+    
+        指大量请求同时访问同一个数据，而缓存恰好失效，此时qps直接打到数据库层
+        解决方案：
+        1. 请求数据库时先获取一个分布式锁，拿到锁的才能请求数据库，未拿到的自循环等待一定时间/次数
+        2. 对数据延时性要求不高的场景，可设置key不过期，异步线程负责更新数据
+        
+    缓存雪崩
+    
+        同一时间大面积的key集体失效，所有请求直接打到数据库
+        解决方案：
+        1. 给缓存的失效时间，加上一个随机值，避免集体失效
+        2. 双缓存，A缓存有过期时间，B缓存长期有效，异步线程负责更新
+        
+    缓存、数据库一致性
+    
+        只能保证最终一致性。先更新数据库，再删缓存。可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。
+        解决方案：
+        1. 一致性要求高场景，实时同步方案，即查询redis，若查询不到再从DB查询，保存到redis；
+        2. 结合kafka mysql.binlog，异步线程消费消息更新缓存
+        3. mysql触发器的机制，对数据库压力大
 
 #### mq
 
