@@ -1,5 +1,7 @@
 package common
 
+import "runtime"
+
 type LruCache struct {
 	data map[string]*node
 	len  int
@@ -69,6 +71,17 @@ func (c *LruCache) Set(key string, value interface{}) {
 	if c.len > c.cap {
 		c.removeTail()
 		c.len--
+	}
+}
+
+func (c *LruCache) CleanData() {
+	c.head.next = c.tail
+	c.tail.pre = c.head
+	count := c.len
+	c.len = 0
+	c.data = make(map[string]*node)
+	if count > 10000 {
+		runtime.GC()
 	}
 }
 
