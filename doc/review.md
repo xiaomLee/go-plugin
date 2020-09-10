@@ -61,6 +61,12 @@
 ### Go语言基础
 
 #### 基本数据结构
+
+##### 数组
+1. 数据结构
+
+   
+
 ##### slice
 1. 数据结构
 
@@ -219,7 +225,7 @@
 
 ##### context
 ##### channel
-   Channel 的实现是一个典型的环形队列加上 mutex 锁的实现，一个发送方队列和一个接收方队列。
+   Channel 的实现是一个环形队列加上 mutex 锁的实现，一个发送方队列和一个接收方队列。
 
 1. 底层结构
 ```
@@ -964,6 +970,102 @@ type schedt struct {
 
 4. 底层数据结构
 
+   在Redis中，这5种基本类型的对象都是封装在robj这个结构体中.
+   ```
+   typedef struct redisObject {
+       // 类型
+       unsigned type:4;
+   
+       // 编码
+       unsigned encoding:4;
+   
+       // 对象最后一次被访问的时间
+       unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
+   
+       // 引用计数，用于内存回收与对象共享
+       int refcount;
+   
+       // 指向实际值的指针
+       void *ptr;
+   } robj;
+   
+   // 通过调用createObject方法可以创建其对象
+   robj *createObject(int type, void *ptr) {
+       robj *o = zmalloc(sizeof(*o));
+       o->type = type;
+       o->encoding = OBJ_ENCODING_RAW;
+       o->ptr = ptr;
+       o->refcount = 1;
+   
+       /* Set the LRU to the current lruclock (minutes resolution), or
+        * alternatively the LFU counter. */
+       if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
+           o->lru = (LFUGetTimeInMinutes()<<8) | LFU_INIT_VAL;
+       } else {
+           o->lru = LRU_CLOCK();
+       }
+       return o;
+   }
+   
+   // type 该属性表示对象的类型
+   #define REDIS_STRING 0
+   #define REDIS_LIST 1
+   #define REDIS_SET 2
+   #define REDIS_ZSET 3
+   #define REDIS_HASH 4
+   
+   // encoding 该属性表示该类型的对象具体的实现
+   #define REDIS_ENCODING_RAW 0     /* Raw representation */    //简单动态字符串
+   #define REDIS_ENCODING_INT 1     /* Encoded as integer */    // 
+   #define REDIS_ENCODING_HT 2      /* Encoded as hash table */
+   #define REDIS_ENCODING_ZIPMAP 3  /* Encoded as zipmap */     // 压缩列表
+   #define REDIS_ENCODING_LINKEDLIST 4 /* Encoded as regular linked list */ //
+   #define REDIS_ENCODING_ZIPLIST 5 /* Encoded as ziplist */
+   #define REDIS_ENCODING_INTSET 6  /* Encoded as intset */
+   #define REDIS_ENCODING_SKIPLIST 7  /* Encoded as skiplist */
+   #define REDIS_ENCODING_EMBSTR 8  /* Embedded sds string encoding */
+   ```
+   
+   EMBSTR RAW 内存实现都是简单动态字符串
+   
+   EMBSTR
+   用来保存短字符串的编码方式。
+   当字符串保存的是一个小于等于44个字节的字符串时，那么robj对象里的属性ptr就会指向一个SDS对象。
+   embstr编码通过调用一次内存分配函数来创建一块连续的内存空间，即redisObject对象和它的ptr指针指向的SDS对象是连续的。
+   不过embstr编码的字符串对象是只读性的，一旦对其指向APPEND命令追加字符串会导致其变为raw编码实现。
+   
+   RAW
+   当字符串对象保存的是一个超过44个字节的字符串时。
+   raw编码的字符串对象是可读可写的，对其指向APPEND命令追加字符串会不会导致其实现改变，
+   如果追加的字符串的长度超过其free属性值，会在追加前重新进行内存空间分配。
+   ```
+   struct sdshdr {
+    // buf 中已占用空间的长度
+    int len;
+   
+    // buf 中剩余可用空间的长度
+    int free;
+   
+    // 数据空间
+    char buf[];
+   };
+   
+   O(1)时间获取字符串长度
+   自动扩容，预分配空间以减少内存重新分配次数
+   惰性删除，缩容时至更新free的值，并不真正释放内存
+   二进制安全
+   ```
+  
+  ziplist 压缩链表
+  
+  指向一块连续的内存，遍历的时候从尾部开始向前遍历，通过pre_content_length计算前一个数据块的大小
+  
+  linkedlist 双向链表
+  
+  hashtable 哈希表
+  
+  skiplist 跳跃表
+   
   
 5. 常见问题
     
