@@ -1526,6 +1526,17 @@ https://juejin.im/post/6844903667569541133
   断路器 - Hystrix 的 Go 实现。
   ```
 
+##### JWT
+    json web token
+    JWT的构成
+    第一部分我们称它为头部（header),第二部分我们称其为载荷（payload, 类似于飞机上承载的物品)，第三部分是签证（signature).
+    
+    header 声明类型，加密算法；json串，base64加密
+    payload 公共声明，过期时间，uid uname之类；json串，base64加密
+    signature base64加密后的header和base64加密后的payload使用.连接组成的字符串，通过header中声明的加密方式进行加盐secret组合加密
+    
+    secret是保存在服务器端的，jwt的签发生成也是在服务器端的，secret就是用来进行jwt的签发和jwt的验证，所以，它就是你服务端的私钥，在任何场景都不应该流露出去。
+    
 
 ##### 服务注册、发现
     借鉴go-micro.register自己实现，支持etcd/consul后端存储可选
