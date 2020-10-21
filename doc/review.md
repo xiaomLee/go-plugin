@@ -879,6 +879,8 @@ type schedt struct {
 
 #### redis
 
+    内存数据库，拥有非常高的性能，单个实例的 QPS 能够达到 10W 左右。
+    
 1. redis持久化
     
    redis提供了两种持久化的方式，分别是RDB（Redis DataBase）和AOF（Append Only File）。
@@ -1366,15 +1368,19 @@ type schedt struct {
    queue 的持久化能保证本身的元数据不会因异常而丢失，但是不能保证内部的 message 不会丢失。要确保 message 不丢失，还需要将 message 也持久化
    如果 exchange 和 queue 都是持久化的，那么它们之间的 binding 也是持久化的。
    如果 exchange 和 queue 两者之间有一个持久化，一个非持久化，就不允许建立绑定。
- 
- 
-2. 适用场景
-   
-   
 
-3. 高可用部署
+3. 集群高可用部署
    
-    
+   **集群原理**
+   
+   1. 每个节点对等，并不存在leader/follower。每个节点保存所有交换器，队列等元数据信息，必须至少有一个磁盘节点，及若干RAM内存节点。
+   2. 队列的消息数据只保存在其分配的节点上。
+   3. 每个节点都可接受请求，对于队列数据不在本节点上的请求会做转发。
+   4. 上层通过HAPROXY做软负载均衡，磁盘节点不参与负载，不提供外部访问。
+   
+3. 适用场景
+   
+      
 
 ##### kafka
 
@@ -1447,11 +1453,82 @@ type schedt struct {
 
 3. 适用场景
 
+
+#### rabbitMq kafka差异对比
+
+   RabbitMQ是一个消息代理，Kafka是一个分布式流式系统。底层实现不一样，rabbit内存型消息系统默认情况下不对消息进行存储，消息消费完成即删除；
+   kafka是追加日志的方式，顺序写磁盘（效率极高），可重复消费。
+   
+   **消息顺序性**
+   
+   rabbit要保证消息顺序性只能通过设置一个队列一个消费者的模式。单队列多消费者的模式下，消息重试并不会阻塞后续消息的消费。
+   kafka天然通过自身的数据分区实现消息顺序性，一个分区只可能被同一消费者里的一个消费者消费。要增加消费速度通过增加分区即可。
+   
+   **消息路由**
+   
+   rabbit通过主题交换器，routing_key实现消息的过滤，以及路由到bind队列。
+   kafka通过topic下设置不同的分区来实现，在消息生产时指定或者根据策略生成，无法实现对非法数据的过滤，只能应用层流式处理。
+   
+   **消息存活/延时消息**
+   
+   rabbit天然支持设置消息ttl，对于过期的消息会被移到死信交换机上，此模式对那些有时效性的命令特别有用。
+   rabbit可通过增加插件的方式实现延时消息。
+   kafka的分区追加事务日志的模式无法支持对消息时间进行处理，只能应用层自身实现。
+   
+   **消息留存**
+   
+   当消费者成功消费消息之后，RabbitMQ就会把对应的消息从存储中删除。
+   Kafka会给每个主题配置超时时间，只要没有达到超时时间的消息都会保留下来。在消息留存方面，Kafka仅仅把它当做消息日志来看待，并不关心消费者的消费状态。
+   Kafka的性能不依赖于存储大小。所以，理论上，它存储消息几乎不会影响性能。
+   
+   **性能/集群伸缩**
+   
+   通常情况下，kafka会比rabbitmq具有更优越的性能。特别对于高并发读写，数据需要落地到磁盘的场景。
+   都支持分布式集群，Kafka横向扩展性比rabbit好，支持数据多副本。rabbit在集群上的表现更为复杂些。
+   
+   **消费者复杂度**
+   
+   对于简单消息队列模式rabbit更具优势，只需定义好交换器，routing_key 以及队列即可。rabbit会负责消息的维护删除等。
+   kafka需要使用者自身设置分区，消费组等，自身维护offset。
+   
+#### 消息组件选择
+
+   优先选择RabbitMQ的条件：
+   
+   1. 高级灵活的路由规则；
+   2. 消息时序控制（控制消息过期或者消息延迟）；
+   3. 高级的容错处理能力，在消费者更有可能处理消息不成功的情景中（瞬时或者持久）；
+   4. 更简单的消费者实现。
+   
+   优先选择Kafka的条件：
+   
+   1. 严格的消息顺序；
+   2. 延长消息留存时间，包括过去消息重放的可能；
+   3. 传统解决方案无法满足的高伸缩能力。
+
 #### nginx
 
 1. 高可用
     
     keepalived + vip
+    
+    高可用(HA, High Availability)：提供健康检查功能，基于 VRRP(Virtual RouterRedundancy Protocol) 协议实现多台机器间的故障转移服务；
+    负载均衡(LB, Load Balancing)：基于 Linux 虚拟服务器(IPVS)内核模块，提供 Layer4 负载均衡。
+    
+   **keepalived原理**
+    
+   Keepalived 分为3个守护进程：
+    
+   父进程: 很简单，负责 fork 子进程，并监视子进程健康(图中 WatchDog 周期性发送检测包，需要的话重启子进程)；
+   
+   子进程A: 负责VRRP框架
+   
+   子进程B: 负责健康检查
+   
+    
+   **VIP原理**
+    
+   利用arp缓存，将一个并未对于实际的主机的IP，动态绑定到一个mac地址。
 
 #### 分布式
 ##### etcd
@@ -1547,6 +1624,31 @@ zab算法，与raft类似。也分为选举 日志两个模块。zk由follower�
    服务器端收到ACK后，就知道可以断开连接了。客户端等待了2MSL后依然没有收到回复，则证明服务器端已正常关闭，那好，我客户端也可以关闭连接了。
    最终完成了四次握手。
    ![四次挥手](./images/四次挥手.jpg)
+   
+   **time_wait问题**
+   
+   time_wait的存在是为了让对方准确收到最后一次ack。在高并发环境下，可能对导致系统可用socket不足的情况，无法为新到的请求分配端口。
+   
+   解决方案
+   
+   1. 设置系统参数，加快time_wait状态连接的回收
+      ```
+      vim /etc/sysctl.conf
+      
+      #time wait 最高的队列数
+      tcp_max_tw_buckets = 256000
+      
+      #FIN_WAIT_2到TIME_WAIT的超时时间
+      net.ipv4.tcp_fin_timeout = 30
+      
+      #表示开启重用
+      net.ipv4.tcp_tw_reuse = 1 允许将TIME-WAIT sockets重新用于新的TCP连接，默认为0，表示关闭；
+      
+      #表示开启TCP连接中TIME-WAIT sockets的快速回收，默认为0，表示关闭
+      net.ipv4.tcp_tw_recycle = 1
+      ```
+   
+   2. 使用长连接，比如grpc
    
 [参考](https://developer.51cto.com/art/201906/597961.htm)
 
@@ -1745,7 +1847,39 @@ https://juejin.im/post/6844903667569541133
 #### docker
 
 #### k8s
+
+   k8s是一个容器编排引擎
+   
+1. Kubernetes 架构
+   
+   从宏观上来看 Kubernetes 的整体架构，包括 Master、Node 以及 Etcd。
+   
+   Master 即主节点，负责控制整个 Kubernetes 集群，它包括 API Server、Scheduler、Controller 等组成部分，它们都需要和 Etcd 进行交互以存储数据：
+   
+   API Server：主要提供资源操作的统一入口，这样就屏蔽了与 Etcd 的直接交互。功能包括安全、注册与发现等。
+   Scheduler：负责按照一定的调度规则将 Pod 调度到 Node 上。
+   Controller：资源控制中心，确保资源处于预期的工作状态。
+   
+   Node 即工作节点，为整个集群提供计算力，是容器真正运行的地方，包括运行容器、kubelet、kube-proxy：
+   
+   kubelet：主要工作包括管理容器的生命周期、结合 cAdvisor 进行监控、健康检查以及定期上报节点状态。
+   Kube-proxy：主要利用 service 提供集群内部的服务发现和负载均衡，同时监听 service/endpoints 变化并刷新负载均衡。
+   ![k8s架构图](./images/k8s架构.jpg)
+   
+2. 从创建 Deployment 开始
+   
+   步骤如下：
+   
+   1. 首先是 kubectl 发起一个创建 deployment 的请求。
+   2. apiserver 接收到创建 deployment 请求，将相关资源写入 etcd；之后所有组件与 apiserver/etcd 的交互都是类似的。
+   3. deployment controller list/watch 资源变化并发起创建 replicaSet 请求
+   4. replicaSet controller list/watch 资源变化并发起创建 pod 请求。
+   5. scheduler 检测到未绑定的 pod 资源，通过一系列匹配以及过滤选择合适的 node 进行绑定。
+   6. kubelet 发现自己 node 上需创建新 pod，负责 pod 的创建及后续生命周期管理。
+   7. kube-proxy 负责初始化 service 相关的资源，包括服务发现、负载均衡等网络规则。
+   ![deployment-init](./images/deployment-init.jpg)
  
+[参考](https://cloud.tencent.com/developer/article/1663968)
 
 ### 项目经验
 
