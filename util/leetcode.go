@@ -104,3 +104,24 @@ func rotateV2(nums []int, k int) {
 	reverse(nums, 0, k%len(nums)-1)
 	reverse(nums, k%len(nums), len(nums)-1)
 }
+
+// 字符串全排列
+// abc: abc bac bca acb, cab cba
+// abc: abc bac cab cba, bca acb
+func Permutation(s string) []string {
+	//println(s)
+	if len(s) <= 1 {
+		return []string{s}
+	}
+
+	ret := make([]string, 0)
+	for i := 0; i < len(s); i++ {
+		cur := s[i : i+1]
+		arr := Permutation(s[0:i] + s[i+1:])
+		for _, a := range arr {
+			ret = append(ret, cur+a)
+		}
+	}
+
+	return ret
+}
