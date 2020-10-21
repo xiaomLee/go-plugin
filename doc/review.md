@@ -65,7 +65,7 @@
 ##### 数组
 1. 数据结构
 
-   
+   &Array{Elem: elem, Bound: bound}
 
 ##### slice
 1. 数据结构
@@ -399,9 +399,9 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool) bool {
    
    G — 表示 Goroutine，它是一个待执行的任务。它在运行时调度器中的地位与线程在操作系统中差不多，但是它占用了更小的内存空间，也降低了上下文切换的开销。
    
-   M — 表示操作系统的线程，它由操作系统的调度器调度和管理；
+   M — 表示操作系统的线程，它由操作系统的调度器调度和管理；本地缓存 mcache
    
-   P — 表示处理器，它可以被看做运行在线程上的本地调度器；
+   P — 表示处理器，它可以被看做运行在线程上的本地调度器；它存在的意义在于实现工作窃取（work stealing）算法，分散锁压力
    ![M-P-G](./images/schd-2.jpg)
    
 
@@ -586,6 +586,9 @@ type schedt struct {
    mcache：为 per-P 的缓存
    ![go内存布局](./images/mollc-1.jpg)
    
+   
+   mcache --> mcentral --> mheap
+   
    ```
    // 说明
    heapArena堆区管理结构体
@@ -730,7 +733,7 @@ type schedt struct {
     InnoDB支持MVCC, 而MyISAM不支持
     InnoDB支持外键，而MyISAM不支持
     InnoDB不支持全文索引，而MyISAM支持
-    索引结构不一样，myisam表可以补存在主键索引
+    索引结构不一样，myisam表可以不存在主键索引
     
     
    索引
@@ -1893,6 +1896,69 @@ https://juejin.im/post/6844903667569541133
    
    
    ![主要模块](./images/gw-主要模块.jpg)
+   
+   **配置模板**
+   
+```
+// api配置
+{
+    "module":"user",
+    "url":"/user/login",
+    "unionApi":false,
+    "login":false,
+    "ratelimit":[
+        {
+            "func":"iplimit",
+            "creditsPerSecond":3
+            "maxBalance":5
+        },
+        {
+            "func":"apilimit",
+            "creditsPerSecond":100
+            "maxBalance":50
+        },
+    ]
+    "beforeAction":{},
+    "backend":[
+        {
+            "service":"user",
+            "api":"login",
+            "protocol":"grpc"
+        }
+    ],
+    "afterAction":{
+        "service":"common",
+        "api":"userinfo/mask",
+        "protocol":"grpc"
+    }
+}
+
+// 微服务配置
+{
+    "service":"user",
+    "loadbalance":"roundrobin",
+    "breaker":{
+        "timeout":5,    // Timeout is the period of the open state,
+        "interval":3,   
+        "maxrequest":5,    
+        "failureCount":3,    
+        "failureRatio":0.6,    
+        "stateChangeCb":"http://xxx",    
+    },
+    "endpoints":{
+        "grpc":[
+            "10.11.11.1:1235",
+            "10.11.11.2:1235"
+        ],
+        "http":[
+            "10.11.11.1:1234",
+            "10.11.11.2:1234"
+        ]
+    }
+}
+
+```
+
 
 ##### 微服务框架
     
@@ -2048,6 +2114,7 @@ https://juejin.im/post/6844903667569541133
    项目核心组件：全局用户信息列表，[ncpu]*reqworker, 根据uid取模处理对应用户请求。
    缺点：存在全局锁、热点数据、导致worker工作不均匀、并发性能低，有状态的内存计算型服务，中心化，无法水平扩展。
    
+   ![交易所架构图](./images/交易所架构图1.jpg)
    
    改进：
    ```
@@ -2084,7 +2151,11 @@ https://juejin.im/post/6844903667569541133
     
 ##### 业内常用解决方案
 
-   采用内存撮合模型，同时通过分布式部署保证单点的高可用
+   采用内存撮合模型，同时通过分布式部署保证单点的高可用。
+   
+   ![撮合引擎](./images/内存撮合引擎.jpg)
+   
+   数据结构：内存分段队列
 
 ##### 有状态分布式应用
    zk raft poixs
