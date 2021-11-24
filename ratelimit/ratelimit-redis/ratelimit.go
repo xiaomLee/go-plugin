@@ -1,8 +1,9 @@
 package ratelimit
 
 import (
-	"io/ioutil"
+	"context"
 	redis_pool "github.com/xiaomLee/go-plugin/redis"
+	"io/ioutil"
 	"strconv"
 )
 
@@ -27,7 +28,7 @@ func InitRateLimit(name, addr, port, pwd string, dbNum int) error {
 		return err
 	}
 
-	scriptSha, err = redis.ScriptLoad(string(script)).Result()
+	scriptSha, err = redis.ScriptLoad(context.Background(), string(script)).Result()
 	println(scriptSha)
 
 	return err
@@ -59,7 +60,7 @@ func tokenAccess(key string, rules ...interface{}) bool {
 
 	keys := []string{key, strconv.Itoa(len(rules))}
 
-	val, err := redis.EvalSha(scriptSha, keys, rules...).Int()
+	val, err := redis.EvalSha(context.Background(), scriptSha, keys, rules...).Int()
 	if err != nil {
 		return false
 	}
