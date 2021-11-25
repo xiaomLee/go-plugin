@@ -26,18 +26,28 @@ func TestAddDB_PLSQL(t *testing.T) {
 	MustGetDB("not-exist-db")
 }
 
+func TestAddDB_SQLITE(t *testing.T) {
+	addDB(SQLITE)
+
+	db := GetDB("test")
+	if err := db.Exec("select 3*3").Error; err != nil {
+		t.Error(err)
+	}
+}
+
 func addDB(dbType string, opts ...Option) {
 	switch dbType {
 	case MYSQL:
 		AddDB("mysql", "user", "root:root@tcp(127.0.0.1:3306)/user?charset=utf8mb4&parseTime=True&loc=Local", opts...)
 	case POSTGRES:
 		AddDB("postgres", "test", "host=10.152.239.200 user=db password=db dbname=test port=5432 sslmode=disable TimeZone=Asia/Shanghai", opts...)
-
+	case SQLITE:
+		AddDB("sqlite", "test", "file:test.db?_auth&_auth_user=admin&_auth_pass=admin&_auth_crypt=sha1", opts...)
 	}
 }
 
 func TestDBOptions(t *testing.T) {
-	addDB(POSTGRES,
+	addDB(MYSQL,
 		MaxConn(1),
 		MaxOpenConn(1),
 		IdleConn(1),

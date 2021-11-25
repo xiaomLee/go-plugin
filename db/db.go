@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"log"
@@ -16,6 +17,7 @@ import (
 const (
 	MYSQL    = "mysql"
 	POSTGRES = "postgres"
+	SQLITE = "sqlite"
 )
 
 type DBPool struct {
@@ -26,7 +28,6 @@ type MyDB struct {
 	*gorm.DB
 	dbType  string
 	key     string
-	name    string
 	options *Options
 }
 
@@ -86,13 +87,10 @@ func (p DBPool) AddDB(dbType string, key string, dsn string, opts ...Option) err
 		return err
 	}
 
-	i := strings.LastIndex(dsn, "/")
-	dbName := dsn[:1+i]
 	p.dbs[key] = &MyDB{
 		DB:      gormInstance,
 		dbType:  dbType,
 		key:     key,
-		name:    dbName,
 		options: options,
 	}
 
@@ -113,6 +111,12 @@ func connect(dbType string, dsn string) (*gorm.DB, error) {
 			LogLevel:      logger.Warn,
 			Colorful:      true,
 		})})
+	case SQLITE:
+		return gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+			SlowThreshold: 500 * time.Millisecond,
+			LogLevel:      logger.Warn,
+			Colorful:      true,
+		})})
 	default:
 		return nil, errors.New("not implement db type")
 	}
@@ -120,7 +124,7 @@ func connect(dbType string, dsn string) (*gorm.DB, error) {
 
 func createDBIfNotExist(dbType string, dsn string) error {
 	// postgres need not create db
-	if dbType == POSTGRES {
+	if dbType != MYSQL {
 		return nil
 	}
 
